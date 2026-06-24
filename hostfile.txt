@@ -1,0 +1,4 @@
+192.168.68.106   # Member 1 (Master)
+192.168.68.109   # Member 2 (Worker)
+192.168.68.107   # Member 3 (Worker)
+192.168.68.111   # Member 4 (Worker)
