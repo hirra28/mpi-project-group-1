@@ -12,8 +12,8 @@ int main(int argc, char* argv[]) {
         LIMIT = std::stoull(argv[1]);
     }
 
-    std::ifstream csv("C:\\Users\\Husna\\mpi-project-group-1\\data\\yellow_tripdata_2015-01.csv");
-    std::ofstream bin("C:\\Users\\Husna\\mpi-project-group-1\\data.bin", std::ios::binary);
+    std::ifstream csv("C:\\Users\\HP\\mpi-project-group-1\\data\\yellow_tripdata_2015-01.csv");
+    std::ofstream bin("C:\\Users\\HP\\mpi-project-group-1\\data.bin", std::ios::binary);
 
     if (!csv.is_open()) {
         std::cout << "ERROR: Cannot open CSV file. Check the path!\n";

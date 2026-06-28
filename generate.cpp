@@ -16,7 +16,7 @@ int main(int argc, char* argv[]) {
     std::mt19937_64 rng(42);
     std::uniform_real_distribution<double> dist(0.0, 10000.0);
 
-    std::ofstream bin("C:\\Users\\Husna\\mpi-project-group-1\\data.bin", std::ios::binary);
+    std::ofstream bin("C:\\Users\\HP\\mpi-project-group-1\\data.bin", std::ios::binary);
 
     if (!bin.is_open()) {
         std::cout << "ERROR: Cannot open output file!\n";

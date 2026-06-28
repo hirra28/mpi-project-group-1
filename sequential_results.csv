@@ -1,7 +1,7 @@
 Task,DataSize,TimeMs
-BasicStats,12748986,39.7709
-Histogram,12748986,53.0886
-Sorting,12748986,981.589
-Correlation,12748986,20.2172
-MovingAverage,12748986,60.8654
-OutlierDetection,12748986,49.0047
+BasicStats,12748986,41.015
+Histogram,12748986,45.9566
+Sorting,12748986,696.179
+Correlation,12748986,18.6158
+MovingAverage,12748986,59.0121
+OutlierDetection,12748986,28.1725
