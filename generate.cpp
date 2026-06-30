@@ -5,7 +5,7 @@
 
 int main(int argc, char* argv[]) {
 
-    size_t N = 100000000; // default = 100M (Large)
+    size_t N = 10000000; // default = 10M (Medium)
     if (argc > 1) {
         N = std::stoull(argv[1]);
     }
@@ -16,7 +16,7 @@ int main(int argc, char* argv[]) {
     std::mt19937_64 rng(42);
     std::uniform_real_distribution<double> dist(0.0, 10000.0);
 
-    std::ofstream bin("C:\\Users\\HP\\mpi-project-group-1\\data.bin", std::ios::binary);
+    std::ofstream bin("C:\\Users\\DELL\\mpi-project-group-1\\data.bin", std::ios::binary);
 
     if (!bin.is_open()) {
         std::cout << "ERROR: Cannot open output file!\n";

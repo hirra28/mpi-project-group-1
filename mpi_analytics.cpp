@@ -1,250 +1,343 @@
-// analytics.cpp  —  sequential version (no MPI)
+// mpi_analytics.cpp — MPI parallel version
+#include <mpi.h>
 #include <iostream>
 #include <fstream>
 #include <vector>
 #include <string>
 #include <algorithm>
-#include <numeric>
 #include <cmath>
-#include <chrono>
 
-using Clock = std::chrono::high_resolution_clock;
-using Ms    = std::chrono::duration<double, std::milli>;
+const std::string BASE_DIR = "C:\\Users\\Dell\\mpi-project-group-1\\";
 
 // ─────────────────────────────────────────
-// LOAD DATA
+// LOAD FULL DATA (only Rank 0 does this)
 // ─────────────────────────────────────────
 void loadData(const std::string& path,
               std::vector<double>& trip_distance,
-              std::vector<double>& fare_amount)
+              std::vector<double>& fare_amount,
+              size_t& N)
 {
     std::ifstream bin(path, std::ios::binary);
     if (!bin.is_open()) {
         std::cerr << "ERROR: Cannot open " << path << "\n";
-        std::exit(1);
+        MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    size_t N = 0;
     bin.read(reinterpret_cast<char*>(&N), sizeof(size_t));
-
     trip_distance.resize(N);
     fare_amount.resize(N);
 
     bin.read(reinterpret_cast<char*>(trip_distance.data()), N * sizeof(double));
     bin.read(reinterpret_cast<char*>(fare_amount.data()),   N * sizeof(double));
-
-    std::cout << "Loaded " << N << " records from " << path << "\n\n";
 }
 
 // ─────────────────────────────────────────
-// TASK 1 — BASIC STATISTICS
+// HELPER — compute send counts/displacements for Scatterv
 // ─────────────────────────────────────────
-void task1_basicStats(const std::vector<double>& data,
-                      std::ofstream& csv)
+void computeCounts(size_t N, int worldSize,
+                   std::vector<int>& counts,
+                   std::vector<int>& displs)
 {
-    auto t0 = Clock::now();
+    counts.resize(worldSize);
+    displs.resize(worldSize);
 
-    double sum = 0, mn = data[0], mx = data[0];
-    for (double v : data) {
-        sum += v;
-        if (v < mn) mn = v;
-        if (v > mx) mx = v;
+    int base = N / worldSize;
+    int rem  = N % worldSize;
+    int offset = 0;
+
+    for (int i = 0; i < worldSize; i++) {
+        counts[i] = base + (i < rem ? 1 : 0);
+        displs[i] = offset;
+        offset += counts[i];
     }
-    double mean = sum / data.size();
-
-    double var = 0;
-    for (double v : data)
-        var += (v - mean) * (v - mean);
-    var /= data.size();
-
-    double ms = Ms(Clock::now() - t0).count();
-
-    std::cout << "Task 1 - Basic Statistics:\n";
-    std::cout << "  Mean     : " << mean           << "\n";
-    std::cout << "  Variance : " << var            << "\n";
-    std::cout << "  Std Dev  : " << std::sqrt(var) << "\n";
-    std::cout << "  Min      : " << mn             << "\n";
-    std::cout << "  Max      : " << mx             << "\n";
-    std::cout << "  Time     : " << ms             << " ms\n\n";
-
-    csv << "BasicStats," << data.size() << "," << ms << "\n";
 }
 
 // ─────────────────────────────────────────
-// TASK 2 — HISTOGRAM
+// LOG RESULT — only Rank 0 writes
 // ─────────────────────────────────────────
-void task2_histogram(const std::vector<double>& data,
-                     double globalMin, double globalMax,
-                     std::ofstream& csv)
+void logResult(std::ofstream& csv, const std::string& task,
+               size_t dataSize, int nodes, double ms)
 {
-    auto t0 = Clock::now();
-
-    const int bins = 10;
-    double binWidth = (globalMax - globalMin) / bins;
-    std::vector<int> hist(bins, 0);
-
-    for (double v : data) {
-        int idx = static_cast<int>((v - globalMin) / binWidth);
-        if (idx >= bins) idx = bins - 1;
-        hist[idx]++;
-    }
-
-    double ms = Ms(Clock::now() - t0).count();
-
-    std::cout << "Task 2 - Histogram (10 bins):\n";
-    for (int i = 0; i < bins; i++)
-        std::cout << "  Bin " << i + 1 << ": " << hist[i] << " records\n";
-    std::cout << "  Time: " << ms << " ms\n\n";
-
-    csv << "Histogram," << data.size() << "," << ms << "\n";
+    csv << task << "," << dataSize << "," << nodes << "," << ms << "\n";
 }
 
-// ─────────────────────────────────────────
-// TASK 3 — SORTING
-// ─────────────────────────────────────────
-void task3_sorting(std::vector<double> data,   // copy intentional
-                   std::ofstream& csv)
+int main(int argc, char** argv)
 {
-    auto t0 = Clock::now();
-    std::sort(data.begin(), data.end());
-    double ms = Ms(Clock::now() - t0).count();
+    MPI_Init(&argc, &argv);
 
-    std::cout << "Task 3 - Sorting:\n";
-    std::cout << "  First value : " << data.front() << "\n";
-    std::cout << "  Last value  : " << data.back()  << "\n";
-    std::cout << "  Time        : " << ms            << " ms\n\n";
+    int rank, worldSize;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
 
-    csv << "Sorting," << data.size() << "," << ms << "\n";
-}
+    // ── Dataset size override via command line (optional) ──
+    size_t requestedN = 0;
+    if (argc > 1) requestedN = std::stoull(argv[1]);
 
-// ─────────────────────────────────────────
-// TASK 4 — PEARSON CORRELATION
-// ─────────────────────────────────────────
-void task4_correlation(const std::vector<double>& X,
-                       const std::vector<double>& Y,
-                       std::ofstream& csv)
-{
-    auto t0 = Clock::now();
+    std::vector<double> trip_distance, fare_amount;
+    size_t N = 0;
 
-    double sumX=0, sumY=0, sumXY=0, sumX2=0, sumY2=0;
-    size_t N = X.size();
-    for (size_t i = 0; i < N; i++) {
-        sumX  += X[i];
-        sumY  += Y[i];
-        sumXY += X[i] * Y[i];
-        sumX2 += X[i] * X[i];
-        sumY2 += Y[i] * Y[i];
+    // ── STEP 1: Rank 0 loads full data ──
+    if (rank == 0) {
+        loadData(BASE_DIR + "data.bin", trip_distance, fare_amount, N);
+        if (requestedN > 0 && requestedN < N) {
+            N = requestedN;
+            trip_distance.resize(N);
+            fare_amount.resize(N);
+        }
+        std::cout << "Rank 0: Loaded " << N << " records, running on "
+                   << worldSize << " nodes\n\n";
     }
 
-    double n = static_cast<double>(N);
-    double corr = (n * sumXY - sumX * sumY) /
-        std::sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
+    // ── STEP 2: Broadcast N to all ranks ──
+    MPI_Bcast(&N, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
 
-    double ms = Ms(Clock::now() - t0).count();
+    // ── STEP 3: Compute scatter counts/displacements ──
+    std::vector<int> counts, displs;
+    computeCounts(N, worldSize, counts, displs);
 
-    std::cout << "Task 4 - Pearson Correlation:\n";
-    std::cout << "  Correlation (distance vs fare): " << corr << "\n";
-    std::cout << "  Time: " << ms << " ms\n\n";
+    int localN = counts[rank];
+    std::vector<double> localDist(localN), localFare(localN);
 
-    csv << "Correlation," << N << "," << ms << "\n";
-}
+    // ── STEP 4: Scatter trip_distance and fare_amount ──
+    MPI_Scatterv(trip_distance.data(), counts.data(), displs.data(), MPI_DOUBLE,
+                localDist.data(), localN, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-// ─────────────────────────────────────────
-// TASK 5 — MOVING AVERAGE
-// ─────────────────────────────────────────
-void task5_movingAverage(const std::vector<double>& data,
-                         std::ofstream& csv)
-{
-    auto t0 = Clock::now();
+    MPI_Scatterv(fare_amount.data(), counts.data(), displs.data(), MPI_DOUBLE,
+                localFare.data(), localN, MPI_DOUBLE, 0, MPI_COMM_WORLD);
 
-    const int window = 100;
-    std::vector<double> avg;
-
-    if (static_cast<int>(data.size()) >= window) {
-        avg.resize(data.size() - window + 1);
-        double wsum = 0;
-        for (int i = 0; i < window; i++) wsum += data[i];
-        avg[0] = wsum / window;
-        for (size_t i = 1; i < avg.size(); i++) {
-            wsum += data[i + window - 1];
-            wsum -= data[i - 1];
-            avg[i] = wsum / window;
+    // ── Open results CSV (rank 0 only) ──
+    std::ofstream csv;
+    if (rank == 0) {
+        csv.open(BASE_DIR + "mpi_results.csv", std::ios::app);
+        // Write header only if file is empty
+        std::ifstream check(BASE_DIR + "mpi_results.csv");
+        check.seekg(0, std::ios::end);
+        if (check.tellg() == 0) {
+            csv << "Task,DataSize,Nodes,TimeMs\n";
         }
     }
 
-    double ms = Ms(Clock::now() - t0).count();
+    MPI_Barrier(MPI_COMM_WORLD);
 
-    std::cout << "Task 5 - Moving Average (window=100):\n";
-    if (!avg.empty()) {
-        std::cout << "  First moving avg : " << avg.front() << "\n";
-        std::cout << "  Last moving avg  : " << avg.back()  << "\n";
+    // ═══════════════════════════════════════════════
+    // TASK 1 — BASIC STATISTICS
+    // ═══════════════════════════════════════════════
+    {
+        double t0 = MPI_Wtime();
+
+        double localSum = 0, localMin = localDist[0], localMax = localDist[0];
+        for (double v : localDist) {
+            localSum += v;
+            if (v < localMin) localMin = v;
+            if (v > localMax) localMax = v;
+        }
+
+        double globalSum, globalMin, globalMax;
+        MPI_Reduce(&localSum, &globalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&localMin, &globalMin, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&localMax, &globalMax, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+
+        double globalMean = 0;
+        if (rank == 0) globalMean = globalSum / N;
+        MPI_Bcast(&globalMean, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+
+        double localVar = 0;
+        for (double v : localDist)
+            localVar += (v - globalMean) * (v - globalMean);
+
+        double globalVar;
+        MPI_Reduce(&localVar, &globalVar, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+
+        MPI_Barrier(MPI_COMM_WORLD);
+        double ms = (MPI_Wtime() - t0) * 1000.0;
+
+        if (rank == 0) {
+            globalVar /= N;
+            std::cout << "Task 1 - Basic Statistics:\n";
+            std::cout << "  Mean: " << globalMean << "  StdDev: " << std::sqrt(globalVar)
+                      << "  Min: " << globalMin << "  Max: " << globalMax
+                      << "  Time: " << ms << " ms\n\n";
+            logResult(csv, "BasicStats", N, worldSize, ms);
+        }
     }
-    std::cout << "  Time             : " << ms << " ms\n\n";
 
-    csv << "MovingAverage," << data.size() << "," << ms << "\n";
-}
+    // ═══════════════════════════════════════════════
+    // TASK 2 — HISTOGRAM
+    // ═══════════════════════════════════════════════
+    {
+        double t0 = MPI_Wtime();
+        const int bins = 10;
 
-// ─────────────────────────────────────────
-// TASK 6 — OUTLIER DETECTION (Z-SCORE)
-// ─────────────────────────────────────────
-void task6_outliers(const std::vector<double>& data,
-                    double mean, double stddev,
-                    std::ofstream& csv)
-{
-    auto t0 = Clock::now();
+        double localMin = *std::min_element(localDist.begin(), localDist.end());
+        double localMax = *std::max_element(localDist.begin(), localDist.end());
+        double globalMin, globalMax;
+        MPI_Allreduce(&localMin, &globalMin, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+        MPI_Allreduce(&localMax, &globalMax, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 
-    int count = 0;
-    for (double v : data) {
-        if (std::abs((v - mean) / stddev) > 3.0)
-            count++;
+        double binWidth = (globalMax - globalMin) / bins;
+        std::vector<int> localHist(bins, 0);
+
+        for (double v : localDist) {
+            int idx = static_cast<int>((v - globalMin) / binWidth);
+            if (idx >= bins) idx = bins - 1;
+            if (idx < 0) idx = 0;
+            localHist[idx]++;
+        }
+
+        std::vector<int> globalHist(bins, 0);
+        MPI_Reduce(localHist.data(), globalHist.data(), bins, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+
+        MPI_Barrier(MPI_COMM_WORLD);
+        double ms = (MPI_Wtime() - t0) * 1000.0;
+
+        if (rank == 0) {
+            std::cout << "Task 2 - Histogram:\n";
+            for (int i = 0; i < bins; i++)
+                std::cout << "  Bin " << i+1 << ": " << globalHist[i] << "\n";
+            std::cout << "  Time: " << ms << " ms\n\n";
+            logResult(csv, "Histogram", N, worldSize, ms);
+        }
     }
 
-    double ms = Ms(Clock::now() - t0).count();
+    // ═══════════════════════════════════════════════
+    // TASK 3 — SORTING (local sort + gather + merge on rank 0)
+    // ═══════════════════════════════════════════════
+    {
+        double t0 = MPI_Wtime();
 
-    std::cout << "Task 6 - Outlier Detection (Z-score > 3):\n";
-    std::cout << "  Outliers found : " << count << "\n";
-    std::cout << "  Time           : " << ms    << " ms\n\n";
+        std::vector<double> sortedLocal = localDist;
+        std::sort(sortedLocal.begin(), sortedLocal.end());
 
-    csv << "OutlierDetection," << data.size() << "," << ms << "\n";
-}
+        std::vector<double> gathered;
+        if (rank == 0) gathered.resize(N);
 
-// ─────────────────────────────────────────
-// MAIN
-// ─────────────────────────────────────────
-int main()
-{
-    std::vector<double> trip_distance, fare_amount;
-    loadData("C:\\Users\\HP\\mpi-project-group-1\\data.bin",
-             trip_distance, fare_amount);
+        MPI_Gatherv(sortedLocal.data(), localN, MPI_DOUBLE,
+                   gathered.data(), counts.data(), displs.data(), MPI_DOUBLE,
+                   0, MPI_COMM_WORLD);
 
-    size_t N = trip_distance.size();
+        if (rank == 0) {
+            std::sort(gathered.begin(), gathered.end()); // final merge step
+        }
 
-    // Pre-compute global min, max, mean, stddev
-    double gMin = *std::min_element(trip_distance.begin(), trip_distance.end());
-    double gMax = *std::max_element(trip_distance.begin(), trip_distance.end());
+        MPI_Barrier(MPI_COMM_WORLD);
+        double ms = (MPI_Wtime() - t0) * 1000.0;
 
-    double gSum = 0;
-    for (double v : trip_distance) gSum += v;
-    double gMean = gSum / N;
+        if (rank == 0) {
+            std::cout << "Task 3 - Sorting:\n";
+            std::cout << "  First: " << gathered.front() << "  Last: " << gathered.back()
+                      << "  Time: " << ms << " ms\n\n";
+            logResult(csv, "Sorting", N, worldSize, ms);
+        }
+    }
 
-    double gVar = 0;
-    for (double v : trip_distance) gVar += (v - gMean) * (v - gMean);
-    gVar /= N;
-    double gStddev = std::sqrt(gVar);
+    // ═══════════════════════════════════════════════
+    // TASK 4 — PEARSON CORRELATION
+    // ═══════════════════════════════════════════════
+    {
+        double t0 = MPI_Wtime();
 
-    std::ofstream csv("C:\\Users\\HP\\mpi-project-group-1\\sequential_results.csv");
-    csv << "Task,DataSize,TimeMs\n";
+        double sumX=0, sumY=0, sumXY=0, sumX2=0, sumY2=0;
+        for (int i = 0; i < localN; i++) {
+            sumX  += localDist[i];
+            sumY  += localFare[i];
+            sumXY += localDist[i] * localFare[i];
+            sumX2 += localDist[i] * localDist[i];
+            sumY2 += localFare[i] * localFare[i];
+        }
 
-    std::cout << "Running sequential analytics on " << N << " records\n\n";
+        double gSumX, gSumY, gSumXY, gSumX2, gSumY2;
+        MPI_Reduce(&sumX,  &gSumX,  1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&sumY,  &gSumY,  1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&sumXY, &gSumXY, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&sumX2, &gSumX2, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(&sumY2, &gSumY2, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 
-    task1_basicStats   (trip_distance,                   csv);
-    task2_histogram    (trip_distance, gMin, gMax,       csv);
-    task3_sorting      (trip_distance,                   csv);
-    task4_correlation  (trip_distance, fare_amount,      csv);
-    task5_movingAverage(trip_distance,                   csv);
-    task6_outliers     (trip_distance, gMean, gStddev,   csv);
+        MPI_Barrier(MPI_COMM_WORLD);
+        double ms = (MPI_Wtime() - t0) * 1000.0;
 
-    csv.close();
-    std::cout << "All tasks done! Results saved to sequential_results.csv\n";
+        if (rank == 0) {
+            double n = static_cast<double>(N);
+            double corr = (n * gSumXY - gSumX * gSumY) /
+                std::sqrt((n * gSumX2 - gSumX * gSumX) * (n * gSumY2 - gSumY * gSumY));
+            std::cout << "Task 4 - Pearson Correlation: " << corr
+                      << "  Time: " << ms << " ms\n\n";
+            logResult(csv, "Correlation", N, worldSize, ms);
+        }
+    }
+
+    // ═══════════════════════════════════════════════
+    // TASK 5 — MOVING AVERAGE (computed locally per chunk)
+    // ═══════════════════════════════════════════════
+    {
+        double t0 = MPI_Wtime();
+        const int window = 100;
+
+        std::vector<double> localAvg;
+        if (localN >= window) {
+            localAvg.resize(localN - window + 1);
+            double wsum = 0;
+            for (int i = 0; i < window; i++) wsum += localDist[i];
+            localAvg[0] = wsum / window;
+            for (int i = 1; i < (int)localAvg.size(); i++) {
+                wsum += localDist[i + window - 1];
+                wsum -= localDist[i - 1];
+                localAvg[i] = wsum / window;
+            }
+        }
+
+        MPI_Barrier(MPI_COMM_WORLD);
+        double ms = (MPI_Wtime() - t0) * 1000.0;
+
+        if (rank == 0) {
+            std::cout << "Task 5 - Moving Average (per-node, window=100): Time: "
+                      << ms << " ms\n\n";
+            logResult(csv, "MovingAverage", N, worldSize, ms);
+        }
+    }
+
+    // ═══════════════════════════════════════════════
+    // TASK 6 — OUTLIER DETECTION (Z-SCORE)
+    // ═══════════════════════════════════════════════
+    {
+        double t0 = MPI_Wtime();
+
+        // Reuse global mean/stddev computed in Task 1 style
+        double localSum = 0;
+        for (double v : localDist) localSum += v;
+        double globalSum;
+        MPI_Allreduce(&localSum, &globalSum, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        double globalMean = globalSum / N;
+
+        double localVar = 0;
+        for (double v : localDist) localVar += (v - globalMean) * (v - globalMean);
+        double globalVar;
+        MPI_Allreduce(&localVar, &globalVar, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        double globalStddev = std::sqrt(globalVar / N);
+
+        int localOutliers = 0;
+        for (double v : localDist) {
+            if (std::abs((v - globalMean) / globalStddev) > 3.0)
+                localOutliers++;
+        }
+
+        int globalOutliers;
+        MPI_Reduce(&localOutliers, &globalOutliers, 1, MPI_INT, MPI_SUM, 0, MPI_COMM_WORLD);
+
+        MPI_Barrier(MPI_COMM_WORLD);
+        double ms = (MPI_Wtime() - t0) * 1000.0;
+
+        if (rank == 0) {
+            std::cout << "Task 6 - Outliers found: " << globalOutliers
+                      << "  Time: " << ms << " ms\n\n";
+            logResult(csv, "OutlierDetection", N, worldSize, ms);
+        }
+    }
+
+    if (rank == 0) {
+        csv.close();
+        std::cout << "All tasks done! Results appended to mpi_results.csv\n";
+    }
+
+    MPI_Finalize();
     return 0;
 }

@@ -214,11 +214,11 @@ int main() {
     std::vector<double> trip_distance, fare_amount;
 
     // Load data
-    loadData("C:\\Users\\HP\\mpi-project-group-1\\data.bin",
+    loadData("C:\\Users\\DELL\\mpi-project-group-1\\data.bin",
              trip_distance, fare_amount);
 
     // Open CSV results file
-    std::ofstream csv("C:\\Users\\HP\\mpi-project-group-1\\sequential_results.csv");
+    std::ofstream csv("C:\\Users\\DELL\\mpi-project-group-1\\sequential_results.csv");
     csv << "Task,DataSize,TimeMs\n";
 
     // Run all 6 tasks
